@@ -87,3 +87,6 @@ ENV/
 
 # Rope project settings
 .ropeproject
+.project
+.pydevproject
+org.eclipse.core.resources.prefs

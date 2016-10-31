@@ -1,0 +1,80 @@
+
+1. event loop/main loop/io loop
+
+twisted的event loop和tornado类似
+twisted的event loop在reactor里
+
+start 事件循环的最简单的步骤如下：
+from twisted.internet import reactor
+reactor.run()
+
+
+从代码可知，实际import的reactor不是一个module， 而是一个动态生成的object：
+
+# twisted/internet/ractor.py
+import sys
+del sys.modules['twisted.internet.reactor']
+from twisted.internet import default
+default.install()
+
+
+在default里得到不同系统对应的reactor的install，如在os x上，会调用到twisted.internet.selectreactor.py里的install
+default.install()用来初始化reactor即event loop
+default.install()会调用到twisted.internet.main里的installReactor, 来动态生成reactor object
+
+def install():
+    """Configure the twisted mainloop to be run using the select() reactor.
+    """
+    reactor = SelectReactor()
+    from twisted.internet.main import installReactor
+    installReactor(reactor)
+
+
+def installReactor(reactor):
+	...
+    twisted.internet.reactor = reactor
+    sys.modules['twisted.internet.reactor'] = reactor
+
+
+
+# 因为下面这些类的继承关系, 最后生成的reactor对象拥有所有这些类的方法和属性
+
+class SelectReactor(posixbase.PosixReactorBase, _extraBase):
+    def __init__(self):
+    	...
+        posixbase.PosixReactorBase.__init__(self)
+
+    def doSelect(self, timeout):
+    	...
+    	# 开始监听io
+            r, w, ignored = _select(self._reads,
+                                    self._writes,
+                                    [], timeout)
+        ...
+    doIteration = doSelect
+
+
+# twisted/internet/posixbase.py
+@implementer(IReactorTCP, IReactorUDP, IReactorMulticast)
+class PosixReactorBase(_SignalReactorMixin, _DisconnectSelectableMixin,
+                       ReactorBase):
+    ...
+
+
+# twisted/internet/base.py
+class _SignalReactorMixin(object):
+
+    def run(self, installSignalHandlers=True):
+        self.startRunning(installSignalHandlers=installSignalHandlers)
+        self.mainLoop()
+
+    def mainLoop(self):
+        while self._started:
+            try:
+                while self._started:
+                	...
+                    # self.doIteration 即 self.doSelect
+                    self.doIteration(t)
+
+
+2. 见reactor_demo/callLater_demo.py

@@ -1,0 +1,139 @@
+
+
+1. 用twisted启动server时， 开始监听、处理事件的过程
+开始时先添加对端口的监听，当有新的连接时进来时，会调用到Port的doRead方法，在这个方法里会添加对此次连接（transport变量，twisted.internet.tcp.Server对象）的监听;
+之后在该连接上有请求进来时，会回调对应transport对象的doRead方法；
+
+1）
+
+reactor.listenTCP(port, factory)
+
+# twisted/internet/posixbase.py
+@implementer(IReactorTCP, IReactorUDP, IReactorMulticast)
+class PosixReactorBase(_SignalReactorMixin, _DisconnectSelectableMixin,
+                       ReactorBase):
+    def listenTCP(self, port, factory, backlog=50, interface=''):
+        p = tcp.Port(port, factory, backlog, interface, self)
+        p.startListening()
+        return p
+
+
+2)
+将1）中生成的Port对象注册到reactor下，并开始对其监听
+
+# twisted/internet/tcp.py
+@implementer(interfaces.IListeningPort)
+class Port(base.BasePort, _SocketCloser):
+    def startListening(self):
+    	...
+        self.startReading()
+
+    def startReading(self):
+        self.reactor.addReader(self)
+
+
+# twisted/internet/selectreactor.py
+@implementer(IReactorFDSet)
+class SelectReactor(posixbase.PosixReactorBase, _extraBase):
+    def addReader(self, reader):
+        """
+        Add a FileDescriptor for notification of data available to read.
+        """
+        self._reads.add(reader)
+        
+3)
+有新的连接时，添加对此次连接的监听：
+
+class SelectReactor(posixbase.PosixReactorBase, _extraBase):
+    def doSelect(self, timeout):
+        try:
+            r, w, ignored = _select(self._reads,
+                                    self._writes,
+                                    [], timeout)
+        ...
+        # 将会调用2）中注册的Port对象的doRead方法 
+        _logrun(selectable, _drdw, selectable, method)
+        
+
+class Port(base.BasePort, _SocketCloser):
+    def doRead(self):
+    	...
+    	# 用factory生成protocol对象
+        protocol = self.factory.buildProtocol(self._buildAddr(addr))
+        ...
+    	# 生成transport对象, 在初始化时，添加对它的监听; self.transport指twisted.internet.tcp.Server类
+        transport = self.transport(skt, protocol, addr, self, s, self.reactor)
+
+        # 在protocol.makeConnection里会将transport对象附到protocol.transport上
+        protocol.makeConnection(transport)
+        ...
+        
+
+# twisted/internet/tcp.py
+class Server(_TLSServerMixin, Connection):
+    def __init__(self, sock, protocol, client, server, sessionno, reactor):
+    	...
+        self.startReading()
+        
+    def startReading(self):
+        self.reactor.addReader(self)
+
+
+4)
+当监听的连接上有请求进来时，处理过程如下：
+
+# twisted/internet/tcp.py, Server继承自Connection
+@implementer(interfaces.ITCPTransport, interfaces.ISystemHandle)
+class Connection(_TLSConnectionMixin, abstract.FileDescriptor, _SocketCloser,
+                 _AbortingMixin):
+    def doRead(self):
+    	...
+        data = self.socket.recv(self.bufferSize)
+        return self._dataReceived(data)
+
+
+    def _dataReceived(self, data):
+    	...
+    	# 调用到protocol的dataReceived方法
+        rval = self.protocol.dataReceived(data)
+        ...
+
+
+5)
+当Server端需要向Client端写数据时，因为在步骤3）中，已经将transport对象设置到了protocol.transport上，
+因此直接用protocol.transport写就行了
+
+
+2. 用twisted启动client时， 开始监听、处理事件的过程
+Server是对twisted.internet.tcp.Server的对象的监听，Client是对twisted.internet.tcp.Client的对象的监听
+
+1）
+
+reactor.connectTCP(port, factory)
+
+# twisted/internet/posixbase.py
+@implementer(IReactorTCP, IReactorUDP, IReactorMulticast)
+class PosixReactorBase(_SignalReactorMixin, _DisconnectSelectableMixin,
+                       ReactorBase):
+    def connectTCP(self, host, port, factory, timeout=30, bindAddress=None):
+        c = tcp.Connector(host, port, factory, timeout, bindAddress, self)
+        c.connect()
+        return c
+
+
+class BaseConnector:
+    def connect(self):
+    	...
+        self.transport = transport = self._makeTransport()
+    	...
+
+class Connector(base.BaseConnector):
+    def _makeTransport(self):
+        return Client(self.host, self.port, self.bindAddress, self, self.reactor)
+
+
+note:
+无论是用twisted做Server还是Client，监听的都是transport；当有事件触发时，都会首先回调到transport的方法；
+当用作Server时，transport指twisted.internet.tcp.Server对象; 当用作Client时，transport指twisted.internet.tcp.Client对象;
+
+
